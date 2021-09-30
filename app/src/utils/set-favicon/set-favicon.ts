@@ -25,6 +25,11 @@ export default function setFavicon(color = '#00C897', hide = false): void {
 
 		const string = 'data:image/svg+xml;base64,' + window.btoa(iconSerialized);
 
+		const existingIcons = document.querySelectorAll('[type="image/x-icon"],[rel="icon"]');
+		existingIcons.forEach((icon) => {
+			if (icon?.parentNode) icon.parentNode.removeChild(icon);
+		});
+
 		const link: HTMLLinkElement = document.querySelector("link[rel*='icon']") || document.createElement('link');
 		link.type = 'image/x-icon';
 		link.rel = 'icon';
