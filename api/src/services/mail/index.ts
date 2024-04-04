@@ -58,7 +58,18 @@ export class MailService {
 
 		const defaultTemplateData = await this.getDefaultTemplateData();
 
-		const from = `${defaultTemplateData.projectName} <${options.from || (env['EMAIL_FROM'] as string)}>`;
+		let from = env['EMAIL_FROM'] as string;
+
+		// Nodemailer's EmailOptions for from support either plain addresses, formatted names or Address objects
+		if (options.from) {
+			if (typeof options.from === 'string') {
+				from = options.from;
+			} else if (typeof options.from === 'object' && options.from.name && options.from.address)
+				from = `${options.from.name} <${options.from.address}>`;
+		}
+
+		// From does not include formatted name, so construct one
+		if (from && !from.includes('<') && !from.includes('>')) from = `${defaultTemplateData.projectName} <${from}>`;
 
 		if (template) {
 			let templateData = template.data;
