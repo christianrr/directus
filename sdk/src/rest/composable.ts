@@ -12,7 +12,7 @@ const defaultConfigValues: RestConfig = {};
  * @returns A Directus REST client.
  */
 export const rest = (config: Partial<RestConfig> = {}) => {
-	return <Schema extends object>(client: DirectusClient<Schema>): RestClient<Schema> => {
+	return <Schema>(client: DirectusClient<Schema>): RestClient<Schema> => {
 		const restConfig = { ...defaultConfigValues, ...config };
 		return {
 			async request<Output = any>(getOptions: RestCommand<Output, Schema>): Promise<Output> {
@@ -31,11 +31,10 @@ export const rest = (config: Partial<RestConfig> = {}) => {
 				}
 
 				// we need to use THIS here instead of client to access overridden functions
-				if ('getToken' in this) {
+				if ('getToken' in this && 'Authorization' in options.headers === false) {
 					const token = await (this.getToken as StaticTokenClient<Schema>['getToken'])();
 
 					if (token) {
-						if (!options.headers) options.headers = {};
 						options.headers['Authorization'] = `Bearer ${token}`;
 					}
 				}

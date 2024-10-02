@@ -7,11 +7,11 @@ import { parseJSON, toArray } from '@directus/utils';
 import type { Knex } from 'knex';
 import { mapValues } from 'lodash-es';
 import { useBus } from '../bus/index.js';
-import { getSchemaCache, setSchemaCache } from '../cache.js';
+import { getLocalSchemaCache, setLocalSchemaCache } from '../cache.js';
 import { ALIAS_TYPES } from '../constants.js';
 import getDatabase from '../database/index.js';
 import { useLock } from '../lock/index.js';
-import { useLogger } from '../logger.js';
+import { useLogger } from '../logger/index.js';
 import { RelationsService } from '../services/relations.js';
 import getDefaultValue from './get-default-value.js';
 import { getSystemFieldRowsWithAuthProviders } from './get-field-system-rows.js';
@@ -35,10 +35,6 @@ export async function getSchema(
 
 	const env = useEnv();
 
-	if (attempt >= MAX_ATTEMPTS) {
-		throw new Error(`Failed to get Schema information: hit infinite loop`);
-	}
-
 	if (options?.bypassCache || env['CACHE_SCHEMA'] === false) {
 		const database = options?.database || getDatabase();
 		const schemaInspector = createInspector(database);
@@ -46,10 +42,14 @@ export async function getSchema(
 		return await getDatabaseSchema(database, schemaInspector);
 	}
 
-	const cached = await getSchemaCache();
+	const cached = await getLocalSchemaCache();
 
 	if (cached) {
 		return cached;
+	}
+
+	if (attempt >= MAX_ATTEMPTS) {
+		throw new Error(`Failed to get Schema information: hit infinite loop`);
 	}
 
 	const lock = useLock();
@@ -59,43 +59,52 @@ export async function getSchema(
 	const messageKey = 'schemaCache--done';
 	const processId = await lock.increment(lockKey);
 
+	if (processId >= (env['CACHE_SCHEMA_MAX_ITERATIONS'] as number)) {
+		await lock.delete(lockKey);
+	}
+
 	const currentProcessShouldHandleOperation = processId === 1;
 
 	if (currentProcessShouldHandleOperation === false) {
 		logger.trace('Schema cache is prepared in another process, waiting for result.');
 
-		return new Promise((resolve) => {
-			const TIMEOUT = 10000;
+		const timeout: Promise<any> = new Promise((_, reject) =>
+			setTimeout(reject, env['CACHE_SCHEMA_SYNC_TIMEOUT'] as number),
+		);
 
-			let timeout: NodeJS.Timeout;
+		const subscription = new Promise<SchemaOverview>((resolve, reject) => {
+			bus.subscribe(messageKey, busListener).catch(reject);
 
-			const callback = async () => {
-				if (timeout) clearTimeout(timeout);
+			function busListener(options: { schema: SchemaOverview | null }) {
+				if (options.schema === null) {
+					return reject();
+				}
 
-				const schema = await getSchema(options, attempt + 1);
-				resolve(schema);
-				bus.unsubscribe(messageKey, callback);
-			};
+				cleanup();
+				setLocalSchemaCache(options.schema).catch(reject);
+				resolve(options.schema);
+			}
 
-			bus.subscribe(messageKey, callback);
-
-			timeout = setTimeout(async () => {
-				logger.trace('Did not receive schema callback message in time. Pulling schema...');
-				callback();
-			}, TIMEOUT);
+			function cleanup() {
+				bus.unsubscribe(messageKey, busListener).catch(reject);
+			}
 		});
+
+		return Promise.race([timeout, subscription]).catch(() => getSchema(options, attempt + 1));
 	}
+
+	let schema: SchemaOverview | null = null;
 
 	try {
 		const database = options?.database || getDatabase();
 		const schemaInspector = createInspector(database);
 
-		const schema = await getDatabaseSchema(database, schemaInspector);
-		await setSchemaCache(schema);
+		schema = await getDatabaseSchema(database, schemaInspector);
+		await setLocalSchemaCache(schema);
 		return schema;
 	} finally {
+		await bus.publish(messageKey, { schema });
 		await lock.delete(lockKey);
-		bus.publish(messageKey, { ready: true });
 	}
 }
 

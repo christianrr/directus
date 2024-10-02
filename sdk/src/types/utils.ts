@@ -20,9 +20,6 @@ export type Merge<A, B, TypeA = NeverToUnknown<A>, TypeB = NeverToUnknown<B>> = 
 		    ? TypeA[K]
 		    : never;
 };
-export type MergeOptional<A, B, TypeA = NeverToUnknown<A>, TypeB = NeverToUnknown<B>> = Partial<
-	Merge<A, B, TypeA, TypeB>
->;
 
 /**
  * Fallback never to unknown
@@ -52,6 +49,8 @@ export type NestedPartial<Item extends object> = {
 };
 
 /**
- * Resolve type to its final object
+ * Reduces a complex object type to make it readable in IDEs.
  */
-export type Identity<U> = U extends infer A ? A : U;
+export type Prettify<T> = {
+	[K in keyof T]: T[K];
+} & unknown;

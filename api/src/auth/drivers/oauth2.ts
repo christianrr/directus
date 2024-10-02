@@ -20,14 +20,16 @@ import { getAuthProvider } from '../../auth.js';
 import { REFRESH_COOKIE_OPTIONS, SESSION_COOKIE_OPTIONS } from '../../constants.js';
 import getDatabase from '../../database/index.js';
 import emitter from '../../emitter.js';
-import { useLogger } from '../../logger.js';
+import { useLogger } from '../../logger/index.js';
 import { respond } from '../../middleware/respond.js';
+import { createDefaultAccountability } from '../../permissions/utils/create-default-accountability.js';
 import { AuthenticationService } from '../../services/authentication.js';
 import { UsersService } from '../../services/users.js';
 import type { AuthData, AuthDriverOptions, User } from '../../types/index.js';
 import asyncHandler from '../../utils/async-handler.js';
 import { getConfigFromEnv } from '../../utils/get-config-from-env.js';
 import { getIPFromReq } from '../../utils/get-ip-from-req.js';
+import { getSecret } from '../../utils/get-secret.js';
 import { isLoginRedirectAllowed } from '../../utils/is-login-redirect-allowed.js';
 import { Url } from '../../utils/url.js';
 import { LocalAuthDriver } from './local.js';
@@ -152,7 +154,7 @@ export class OAuth2AuthDriver extends LocalAuthDriver {
 		// Flatten response to support dot indexes
 		userInfo = flatten(userInfo) as Record<string, unknown>;
 
-		const { provider, emailKey, identifierKey, allowPublicRegistration } = this.config;
+		const { provider, emailKey, identifierKey, allowPublicRegistration, syncUserInfo } = this.config;
 
 		const email = userInfo[emailKey ?? 'email'] ? String(userInfo[emailKey ?? 'email']) : undefined;
 		// Fallback to email if explicit identifier not found
@@ -178,9 +180,22 @@ export class OAuth2AuthDriver extends LocalAuthDriver {
 		if (userId) {
 			// Run hook so the end user has the chance to augment the
 			// user that is about to be updated
+			let emitPayload: Record<string, unknown> = {
+				auth_data: userPayload.auth_data,
+			};
+
+			if (syncUserInfo) {
+				emitPayload = {
+					...emitPayload,
+					first_name: userPayload.first_name,
+					last_name: userPayload.last_name,
+					email: userPayload.email,
+				};
+			}
+
 			const updatedUserPayload = await emitter.emitFilter(
 				`auth.update`,
-				{ auth_data: userPayload.auth_data },
+				emitPayload,
 				{
 					identifier,
 					provider: this.config['provider'],
@@ -306,7 +321,7 @@ export function createOAuth2AuthRouter(providerName: string): Router {
 				throw new InvalidPayloadError({ reason: `URL "${redirect}" can't be used to redirect after login` });
 			}
 
-			const token = jwt.sign({ verifier: codeVerifier, redirect, prompt }, env['SECRET'] as string, {
+			const token = jwt.sign({ verifier: codeVerifier, redirect, prompt }, getSecret(), {
 				expiresIn: '5m',
 				issuer: 'directus',
 			});
@@ -338,7 +353,7 @@ export function createOAuth2AuthRouter(providerName: string): Router {
 			let tokenData;
 
 			try {
-				tokenData = jwt.verify(req.cookies[`oauth2.${providerName}`], env['SECRET'] as string, {
+				tokenData = jwt.verify(req.cookies[`oauth2.${providerName}`], getSecret(), {
 					issuer: 'directus',
 				}) as {
 					verifier: string;
@@ -352,10 +367,9 @@ export function createOAuth2AuthRouter(providerName: string): Router {
 
 			const { verifier, redirect, prompt } = tokenData;
 
-			const accountability: Accountability = {
+			const accountability: Accountability = createDefaultAccountability({
 				ip: getIPFromReq(req),
-				role: null,
-			};
+			});
 
 			const userAgent = req.get('user-agent')?.substring(0, 1024);
 			if (userAgent) accountability.userAgent = userAgent;
